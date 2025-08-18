@@ -17,14 +17,19 @@ public class FriendsController(AppDbContext db) : ControllerBase
     public async Task<ActionResult<IEnumerable<FriendDto>>> List()
     {
         var me = MeId;
+
         var accepted = await db.Friendships
             .Where(f => f.Status == FriendshipStatus.Accepted &&
-                (f.RequesterId == me || f.AddresseeId == me))
+                        (f.RequesterId == me || f.AddresseeId == me))
             .Select(f => f.RequesterId == me ? f.AddresseeId : f.RequesterId)
             .Distinct()
             .ToListAsync();
 
-        var users = await db.Users.Where(u => accepted.Contains(u.Id))
+        if (accepted.Count == 0)
+            return Ok(Array.Empty<FriendDto>());
+
+        var users = await db.Users
+            .Where(u => accepted.Contains(u.Id))
             .OrderBy(u => u.UserName)
             .Select(u => new FriendDto(u.Id, u.UserName, u.Email))
             .ToListAsync();
