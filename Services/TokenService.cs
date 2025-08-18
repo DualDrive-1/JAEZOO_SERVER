@@ -24,6 +24,7 @@ public class TokenService(IOptions<JwtOptions> opts)
         var claims = new[]
         {
             new Claim(JwtRegisteredClaimNames.Sub, u.Id.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, u.Id.ToString()),     // <= важно для Clients.User(...)
             new Claim(JwtRegisteredClaimNames.UniqueName, u.UserName),
             new Claim(JwtRegisteredClaimNames.Email, u.Email)
         };

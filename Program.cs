@@ -83,4 +83,7 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapGet("/", () => Results.Redirect("/swagger"));
+app.MapHub<JaeZoo.Server.Hubs.ChatHub>("/hubs/chat");
+
 app.Run();
