@@ -18,24 +18,26 @@ public class FriendsController(AppDbContext db) : ControllerBase
     {
         var me = MeId;
 
-        var accepted = await db.Friendships
+        // Ищем айдишники друзей со статусом Accepted
+        var friendIds = await db.Friendships
             .Where(f => f.Status == FriendshipStatus.Accepted &&
                         (f.RequesterId == me || f.AddresseeId == me))
             .Select(f => f.RequesterId == me ? f.AddresseeId : f.RequesterId)
             .Distinct()
             .ToListAsync();
 
-        if (accepted.Count == 0)
-            return Ok(Array.Empty<FriendDto>());
+        if (friendIds.Count == 0)
+            return Ok(Array.Empty<FriendDto>()); // <-- ключевое: отдаём пустой список
 
         var users = await db.Users
-            .Where(u => accepted.Contains(u.Id))
+            .Where(u => friendIds.Contains(u.Id))
             .OrderBy(u => u.UserName)
             .Select(u => new FriendDto(u.Id, u.UserName, u.Email))
             .ToListAsync();
 
         return Ok(users);
     }
+
 
     [HttpPost("request/{targetId:guid}")]
     public async Task<IActionResult> Request(Guid targetId)
