@@ -1,0 +1,6 @@
+﻿namespace JaeZoo.Server.Models;
+
+public record RegisterRequest(string UserName, string Email, string Password, string ConfirmPassword);
+public record LoginRequest(string LoginOrEmail, string Password);
+public record UserDto(Guid Id, string UserName, string Email, DateTime CreatedAt);
+public record TokenResponse(string Token, UserDto User);
