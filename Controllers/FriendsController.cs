@@ -3,22 +3,29 @@ using JaeZoo.Server.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace JaeZoo.Server.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
-public class FriendsController(AppDbContext db) : ControllerBase
+[Authorize] // <--- закрыли контроллер
+public class FriendsController : ControllerBase
 {
-    private Guid MeId => Guid.Parse(User.FindFirst("sub")!.Value);
+    private readonly AppDbContext db;
+    public FriendsController(AppDbContext db) => this.db = db;
+
+    private bool TryGetUserId(out Guid userId)
+    {
+        var idStr = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(idStr, out userId);
+    }
 
     [HttpGet("list")]
     public async Task<ActionResult<IEnumerable<FriendDto>>> List()
     {
-        var me = MeId;
+        if (!TryGetUserId(out var me)) return Unauthorized(); // <--- больше не NRE
 
-        // Ищем айдишники друзей со статусом Accepted
         var friendIds = await db.Friendships
             .Where(f => f.Status == FriendshipStatus.Accepted &&
                         (f.RequesterId == me || f.AddresseeId == me))
@@ -27,7 +34,7 @@ public class FriendsController(AppDbContext db) : ControllerBase
             .ToListAsync();
 
         if (friendIds.Count == 0)
-            return Ok(Array.Empty<FriendDto>()); // <-- ключевое: отдаём пустой список
+            return Ok(Array.Empty<FriendDto>());
 
         var users = await db.Users
             .Where(u => friendIds.Contains(u.Id))
@@ -36,42 +43,5 @@ public class FriendsController(AppDbContext db) : ControllerBase
             .ToListAsync();
 
         return Ok(users);
-    }
-
-
-    [HttpPost("request/{targetId:guid}")]
-    public async Task<IActionResult> Request(Guid targetId)
-    {
-        var me = MeId;
-        if (targetId == me) return BadRequest("Нельзя добавить себя.");
-
-        // уже есть в одном из направлений?
-        var exists = await db.Friendships.FirstOrDefaultAsync(f =>
-            (f.RequesterId == me && f.AddresseeId == targetId) ||
-            (f.RequesterId == targetId && f.AddresseeId == me));
-
-        if (exists is not null)
-        {
-            if (exists.Status == FriendshipStatus.Accepted) return Conflict("Вы уже друзья.");
-            if (exists.RequesterId == me && exists.Status == FriendshipStatus.Pending) return Conflict("Заявка уже отправлена.");
-            if (exists.RequesterId == targetId && exists.Status == FriendshipStatus.Pending) return Conflict("У вас есть входящая заявка.");
-        }
-
-        db.Friendships.Add(new Friendship { RequesterId = me, AddresseeId = targetId });
-        await db.SaveChangesAsync();
-        return Ok(new { message = "Заявка отправлена." });
-    }
-
-    [HttpPost("accept/{fromUserId:guid}")]
-    public async Task<IActionResult> Accept(Guid fromUserId)
-    {
-        var me = MeId;
-        var req = await db.Friendships.FirstOrDefaultAsync(f =>
-            f.RequesterId == fromUserId && f.AddresseeId == me && f.Status == FriendshipStatus.Pending);
-
-        if (req is null) return NotFound("Заявка не найдена.");
-        req.Status = FriendshipStatus.Accepted;
-        await db.SaveChangesAsync();
-        return Ok(new { message = "Теперь вы друзья." });
     }
 }

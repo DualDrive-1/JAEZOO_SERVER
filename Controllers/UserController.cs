@@ -3,24 +3,33 @@ using JaeZoo.Server.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace JaeZoo.Server.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class UsersController(AppDbContext db) : ControllerBase
+[Authorize] // <--- закрыли контроллер
+public class UsersController : ControllerBase
 {
-    [Authorize]
+    private readonly AppDbContext db;
+    public UsersController(AppDbContext db) => this.db = db;
+
+    private bool TryGetUserId(out Guid userId)
+    {
+        var idStr = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(idStr, out userId);
+    }
+
     [HttpGet("search")]
     public async Task<ActionResult<IEnumerable<UserSearchDto>>> Search([FromQuery] string q)
     {
-        var meId = Guid.Parse(User.FindFirst("sub")!.Value);
-        var query = (q ?? string.Empty).Trim();
+        if (!TryGetUserId(out var meId)) return Unauthorized(); // <--- больше не NRE
 
+        var query = (q ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(query))
             return Ok(Array.Empty<UserSearchDto>());
 
-        // простой регистронезависимый поиск по никнейму/почте
         var qLower = query.ToLower();
 
         var items = await db.Users
@@ -34,5 +43,4 @@ public class UsersController(AppDbContext db) : ControllerBase
 
         return Ok(items);
     }
-
 }
