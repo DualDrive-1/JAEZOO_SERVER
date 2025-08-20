@@ -1,48 +1,41 @@
 ﻿using JaeZoo.Server.Data;
+using JaeZoo.Server.Dtos;
 using JaeZoo.Server.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
-using JaeZoo.Server.Dtos;                 // ✅ наши серверные DTO
 
 namespace JaeZoo.Server.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize] // контроллер доступен только с JWT
-public class UsersController : ControllerBase
+[Authorize]
+public class UserController : ControllerBase
 {
-    private readonly AppDbContext db;
-    public UsersController(AppDbContext db) => this.db = db;
+    private readonly AppDbContext _db;
+    public UserController(AppDbContext db) => _db = db;
 
-    private bool TryGetUserId(out Guid userId)
-    {
-        var idStr = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return Guid.TryParse(idStr, out userId);
-    }
-
+    // GET /api/user/search?query=...
     [HttpGet("search")]
-    public async Task<ActionResult<IEnumerable<UserSearchDto>>> Search([FromQuery] string q)
+    public async Task<ActionResult<IEnumerable<UserSearchDto>>> Search([FromQuery] string? query)
     {
-        if (!TryGetUserId(out var meId)) return Unauthorized();
+        query = (query ?? "").Trim();
 
-        var query = (q ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(query))
-            return Ok(Array.Empty<UserSearchDto>());
+        var q = _db.Users.AsNoTracking();
 
-        var qLower = query.ToLower();
+        if (!string.IsNullOrEmpty(query))
+        {
+            q = q.Where(u =>
+                u.UserName.ToLower().Contains(query.ToLower()) ||
+                u.Email.ToLower().Contains(query.ToLower()));
+        }
 
-        var items = await db.Users
-            .Where(u => u.Id != meId &&
-                        (u.UserName.ToLower().Contains(qLower) ||
-                         u.Email.ToLower().Contains(qLower)))
+        var data = await q
             .OrderBy(u => u.UserName)
-            .Take(20)
-            // ✅ string Id для DTO
-            .Select(u => new UserSearchDto(u.Id.ToString(), u.UserName, u.Email))
+            .Take(50)
+            .Select(u => new UserSearchDto(u.Id, u.UserName, u.Email))
             .ToListAsync();
 
-        return Ok(items);
+        return Ok(data);
     }
 }

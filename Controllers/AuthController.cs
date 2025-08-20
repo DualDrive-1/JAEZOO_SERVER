@@ -1,75 +1,99 @@
-﻿using JaeZoo.Server.Data;
+﻿using System.Text.Json;
+using BCryptNet = BCrypt.Net.BCrypt;
+using JaeZoo.Server.Data;
 using JaeZoo.Server.Models;
 using JaeZoo.Server.Services;
-using JaeZoo.Server.Dtos;                 // ✅ наши серверные DTO
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace JaeZoo.Server.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
-public class AuthController(AppDbContext db, TokenService tokens) : ControllerBase
+[Route("api/auth")]
+public class AuthController : ControllerBase
 {
-    private readonly PasswordHasher<User> _hasher = new();
+    private readonly AppDbContext _db;
+    private readonly TokenService _tokens;
 
+    public AuthController(AppDbContext db, TokenService tokens)
+    {
+        _db = db;
+        _tokens = tokens;
+    }
+
+    // POST /api/auth/register
     [HttpPost("register")]
-    public async Task<IActionResult> Register([FromBody] RegisterRequest r)
+    public async Task<IActionResult> Register([FromBody] JsonElement body)
     {
-        if (string.IsNullOrWhiteSpace(r.UserName) || string.IsNullOrWhiteSpace(r.Email) ||
-            string.IsNullOrWhiteSpace(r.Password) || string.IsNullOrWhiteSpace(r.ConfirmPassword))
-            return BadRequest("Заполните все поля.");
+        string? userName = GetString(body, "UserName", "Username", "login", "name");
+        string? email = GetString(body, "Email", "email");
+        string? password = GetString(body, "Password", "password", "pass");
 
-        if (r.Password != r.ConfirmPassword)
-            return BadRequest("Пароли не совпадают.");
+        if (string.IsNullOrWhiteSpace(userName) ||
+            string.IsNullOrWhiteSpace(email) ||
+            string.IsNullOrWhiteSpace(password))
+        {
+            return BadRequest("UserName, Email, Password are required.");
+        }
 
-        if (await db.Users.AnyAsync(u => u.UserName == r.UserName))
-            return Conflict("Пользователь с таким логином уже существует.");
+        var exists = await _db.Users.AnyAsync(u => u.UserName == userName || u.Email == email);
+        if (exists) return Conflict("User with same username or email already exists.");
 
-        if (await db.Users.AnyAsync(u => u.Email == r.Email))
-            return Conflict("Пользователь с такой почтой уже существует.");
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            UserName = userName,
+            Email = email,
+            PasswordHash = BCryptNet.HashPassword(password),
+            CreatedAt = DateTime.UtcNow
+        };
 
-        var user = new User { UserName = r.UserName.Trim(), Email = r.Email.Trim() };
-        user.PasswordHash = _hasher.HashPassword(user, r.Password);
-        db.Users.Add(user);
-        await db.SaveChangesAsync();
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
 
-        return Created("", new { message = "Регистрация успешна. Теперь войдите." });
+        var token = _tokens.IssueJwt(user);
+
+        // Возвращаем анонимный объект — клиенту пофиг, а нам не нужен конкретный TokenResponse
+        return Ok(new
+        {
+            token,
+            userId = user.Id.ToString(),
+            userName = user.UserName ?? string.Empty
+        });
     }
 
+    // POST /api/auth/login
     [HttpPost("login")]
-    public async Task<ActionResult<TokenResponse>> Login([FromBody] LoginRequest r)
+    public async Task<IActionResult> Login([FromBody] JsonElement body)
     {
-        var login = (r.LoginOrEmail ?? "").Trim();
-        var user = await db.Users.FirstOrDefaultAsync(u =>
-            u.UserName == login || u.Email == login);
+        // Поддерживаем любые варианты поля логина
+        string? login = GetString(body, "Login", "LoginOrEmail", "login", "Username", "UserName", "Email", "email");
+        string? password = GetString(body, "Password", "password", "pass");
 
-        if (user is null)
-            return Unauthorized("Неверный логин/почта или пароль.");
+        if (string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(password))
+            return BadRequest("Login and Password are required.");
 
-        var result = _hasher.VerifyHashedPassword(user, user.PasswordHash, r.Password);
-        if (result is not PasswordVerificationResult.Success)
-            return Unauthorized("Неверный логин/почта или пароль.");
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.UserName == login || u.Email == login);
+        if (user == null || !BCryptNet.Verify(password, user.PasswordHash))
+            return Unauthorized("Invalid credentials.");
 
-        var token = tokens.Create(user);
+        var token = _tokens.IssueJwt(user);
 
-        // ✅ string Id для DTO
-        var dto = new UserDto(user.Id.ToString(), user.UserName, user.Email, user.CreatedAt);
-        return new TokenResponse(token, dto);
+        return Ok(new
+        {
+            token,
+            userId = user.Id.ToString(),
+            userName = user.UserName ?? string.Empty
+        });
     }
 
-    [Authorize]
-    [HttpGet("me")]
-    public async Task<ActionResult<UserDto>> Me([FromServices] AppDbContext db)
+    private static string? GetString(JsonElement body, params string[] keys)
     {
-        var idStr = User.Claims.First(c => c.Type == "sub").Value;
-        var id = Guid.Parse(idStr);
-        var u = await db.Users.FindAsync(id);
-        if (u is null) return NotFound();
-
-        // ✅ string Id для DTO
-        return new UserDto(u.Id.ToString(), u.UserName, u.Email, u.CreatedAt);
+        foreach (var key in keys)
+        {
+            if (body.TryGetProperty(key, out var prop) && prop.ValueKind == JsonValueKind.String)
+                return prop.GetString();
+        }
+        return null;
     }
 }
