@@ -92,14 +92,8 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-var enableSwagger = app.Environment.IsDevelopment() ||
-                    string.Equals(app.Configuration["EnableSwagger"], "true", StringComparison.OrdinalIgnoreCase);
-
-if (enableSwagger)
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
 
 
 app.UseCors("client");
@@ -111,7 +105,7 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");
 
-app.MapGet("/", () => Results.Ok(new
+app.MapMethods("/", new[] { "GET", "HEAD" }, () => Results.Ok(new
 {
     service = "JaeZoo.Server",
     status = "ok",
