@@ -1,10 +1,9 @@
-﻿using System.Security.Claims;
-using JaeZoo.Server.Data;
-using JaeZoo.Server.Dtos;
+﻿using JaeZoo.Server.Data;
 using JaeZoo.Server.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace JaeZoo.Server.Controllers;
 
@@ -14,141 +13,150 @@ namespace JaeZoo.Server.Controllers;
 public class FriendsController : ControllerBase
 {
     private readonly AppDbContext _db;
-    public FriendsController(AppDbContext db) => _db = db;
 
+    public FriendsController(AppDbContext db)
+    {
+        _db = db;
+    }
+
+    // ======== DTOs, только для сервера ========
+    public record FriendDto(Guid UserId, string UserName, string? Email);
+    public record FriendRequestDto(Guid RequestId, Guid UserId, string UserName, string? Email, DateTime CreatedAt);
+    public record FriendRequestsResponse(List<FriendRequestDto> Incoming, List<FriendRequestDto> Outgoing);
+
+    // извлекаем текущего пользователя из клейма
     private bool TryGetUserId(out Guid userId)
     {
-        var idStr = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return Guid.TryParse(idStr, out userId);
+        var s = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return Guid.TryParse(s, out userId);
     }
 
-    private Task<bool> AlreadyFriendsOrPending(Guid me, Guid other) =>
-        _db.Friendships.AnyAsync(f =>
-            (f.RequesterId == me && f.AddresseeId == other) ||
-            (f.RequesterId == other && f.AddresseeId == me));
-
-    [HttpGet("list")]
-    public async Task<ActionResult<IEnumerable<FriendDto>>> List()
-    {
-        if (!TryGetUserId(out var me))
-            return Unauthorized();
-
-        try
-        {
-            var accepted = _db.Friendships
-                .Where(f => f.Status == FriendshipStatus.Accepted &&
-                            (f.RequesterId == me || f.AddresseeId == me));
-
-            var asRequester = accepted
-                .Where(f => f.RequesterId == me)
-                .Join(_db.Users, f => f.AddresseeId, u => u.Id,
-                    (f, u) => new FriendDto(
-                        u.Id.ToString(),
-                        u.UserName ?? "(no name)",
-                        u.Email ?? string.Empty));
-
-            var asAddressee = accepted
-                .Where(f => f.AddresseeId == me)
-                .Join(_db.Users, f => f.RequesterId, u => u.Id,
-                    (f, u) => new FriendDto(
-                        u.Id.ToString(),
-                        u.UserName ?? "(no name)",
-                        u.Email ?? string.Empty));
-
-            var items = await asRequester
-                .Concat(asAddressee)
-                .OrderBy(x => x.UserName)
-                .ToListAsync();
-
-            return Ok(items);
-        }
-        catch (Exception ex)
-        {
-            // логирование ошибки, чтобы видеть точную причину
-            Console.WriteLine("Ошибка в FriendsController.List: " + ex.Message);
-            return StatusCode(500, "Ошибка при загрузке списка друзей.");
-        }
-    }
-
-    // Было Request(...) — переименовали, чтобы не перекрывать ControllerBase.Request
-    [HttpPost("request/{userId:guid}")]
-    public async Task<IActionResult> SendRequest(Guid userId)
+    // ======== Список друзей (два маршрута для совместимости) ========
+    [HttpGet]
+    [HttpGet("my")]
+    public async Task<ActionResult<List<FriendDto>>> GetMyFriends()
     {
         if (!TryGetUserId(out var me)) return Unauthorized();
-        if (userId == me) return BadRequest("Нельзя отправить заявку самому себе.");
 
-        if (await AlreadyFriendsOrPending(me, userId))
-            return Conflict("Заявка уже отправлена или вы уже друзья.");
+        // я -> он (accepted)
+        var q1 =
+            from f in _db.Friendships
+            where f.Status == FriendshipStatus.Accepted && f.RequesterId == me
+            join u in _db.Users on f.AddresseeId equals u.Id
+            select new FriendDto(u.Id, u.UserName, u.Email);
 
-        var f = new Friendship
+        // он -> я (accepted)
+        var q2 =
+            from f in _db.Friendships
+            where f.Status == FriendshipStatus.Accepted && f.AddresseeId == me
+            join u in _db.Users on f.RequesterId equals u.Id
+            select new FriendDto(u.Id, u.UserName, u.Email);
+
+        var list = await q1.Union(q2).Distinct().ToListAsync();
+        return Ok(list);
+    }
+
+    // ======== Входящие/исходящие заявки ========
+    [HttpGet("requests")]
+    public async Task<ActionResult<FriendRequestsResponse>> GetRequests()
+    {
+        if (!TryGetUserId(out var me)) return Unauthorized();
+
+        var incoming =
+            await (from f in _db.Friendships
+                   where f.Status == FriendshipStatus.Pending && f.AddresseeId == me
+                   join u in _db.Users on f.RequesterId equals u.Id
+                   orderby f.CreatedAt descending
+                   select new FriendRequestDto(f.Id, u.Id, u.UserName, u.Email, f.CreatedAt))
+                  .ToListAsync();
+
+        var outgoing =
+            await (from f in _db.Friendships
+                   where f.Status == FriendshipStatus.Pending && f.RequesterId == me
+                   join u in _db.Users on f.AddresseeId equals u.Id
+                   orderby f.CreatedAt descending
+                   select new FriendRequestDto(f.Id, u.Id, u.UserName, u.Email, f.CreatedAt))
+                  .ToListAsync();
+
+        return Ok(new FriendRequestsResponse(incoming, outgoing));
+    }
+
+    // ======== Отправить заявку ========
+    [HttpPost("request/{toUserId:guid}")]
+    public async Task<IActionResult> SendRequest(Guid toUserId)
+    {
+        if (!TryGetUserId(out var me)) return Unauthorized();
+        if (me == toUserId) return BadRequest("Нельзя добавить в друзья самого себя.");
+
+        // нет ли уже заявки/дружбы в любом направлении
+        var exists = await _db.Friendships.AnyAsync(f =>
+            (f.RequesterId == me && f.AddresseeId == toUserId) ||
+            (f.RequesterId == toUserId && f.AddresseeId == me));
+
+        if (exists) return Conflict("Заявка уже существует или вы уже друзья.");
+
+        var fr = new Friendship
         {
+            Id = Guid.NewGuid(),
             RequesterId = me,
-            AddresseeId = userId,
+            AddresseeId = toUserId,
             Status = FriendshipStatus.Pending,
             CreatedAt = DateTime.UtcNow
         };
-        _db.Friendships.Add(f);
+
+        _db.Friendships.Add(fr);
         await _db.SaveChangesAsync();
-        return Ok(new { requested = true });
+        return Ok(new { requested = true, requestId = fr.Id });
     }
 
+    // ======== Принять заявку (по пользователю-отправителю) ========
     [HttpPost("accept/{userId:guid}")]
     public async Task<IActionResult> Accept(Guid userId)
     {
         if (!TryGetUserId(out var me)) return Unauthorized();
 
         var fr = await _db.Friendships.SingleOrDefaultAsync(f =>
-            f.RequesterId == userId && f.AddresseeId == me && f.Status == FriendshipStatus.Pending);
+            f.RequesterId == userId &&
+            f.AddresseeId == me &&
+            f.Status == FriendshipStatus.Pending);
 
-        if (fr == null) return NotFound();
-
+        if (fr == null) return NotFound("Заявка не найдена.");
         fr.Status = FriendshipStatus.Accepted;
         await _db.SaveChangesAsync();
         return Ok(new { accepted = true });
     }
 
-    [HttpPost("decline/{userId:guid}")]
-    public async Task<IActionResult> Decline(Guid userId)
+    // ======== Отклонить заявку (по пользователю-отправителю) ========
+    [HttpPost("reject/{userId:guid}")]
+    public async Task<IActionResult> Reject(Guid userId)
     {
         if (!TryGetUserId(out var me)) return Unauthorized();
 
         var fr = await _db.Friendships.SingleOrDefaultAsync(f =>
-            f.RequesterId == userId && f.AddresseeId == me && f.Status == FriendshipStatus.Pending);
+            f.RequesterId == userId &&
+            f.AddresseeId == me &&
+            f.Status == FriendshipStatus.Pending);
 
-        if (fr == null) return NotFound();
-
+        if (fr == null) return NotFound("Заявка не найдена.");
         _db.Friendships.Remove(fr);
         await _db.SaveChangesAsync();
-        return Ok(new { declined = true });
+        return Ok(new { rejected = true });
     }
 
-    [HttpGet("requests/incoming")]
-    public async Task<ActionResult<IEnumerable<FriendRequestDto>>> Incoming()
+    // ======== Удалить из друзей (в любую сторону) ========
+    [HttpDelete("remove/{userId:guid}")]
+    public async Task<IActionResult> Remove(Guid userId)
     {
         if (!TryGetUserId(out var me)) return Unauthorized();
 
-        var list = await _db.Friendships
-            .Where(f => f.Status == FriendshipStatus.Pending && f.AddresseeId == me)
-            .Join(_db.Users, f => f.RequesterId, u => u.Id, (f, u) =>
-                new FriendRequestDto(u.Id.ToString(), u.UserName, u.Email, f.CreatedAt))
-            .OrderByDescending(x => x.CreatedAt)
-            .ToListAsync();
+        var fr = await _db.Friendships.SingleOrDefaultAsync(f =>
+            f.Status == FriendshipStatus.Accepted &&
+            ((f.RequesterId == me && f.AddresseeId == userId) ||
+             (f.RequesterId == userId && f.AddresseeId == me)));
 
-        return Ok(list);
-    }
-
-    [HttpGet("requests/outgoing")]
-    public async Task<ActionResult<IEnumerable<FriendRequestDto>>> Outgoing()
-    {
-        if (!TryGetUserId(out var me)) return Unauthorized();
-
-        var list = await _db.Friendships
-            .Where(f => f.Status == FriendshipStatus.Pending && f.RequesterId == me)
-            .Join(_db.Users, f => f.AddresseeId, u => u.Id, (f, u) =>
-                new FriendRequestDto(u.Id.ToString(), u.UserName, u.Email, f.CreatedAt))
-            .OrderByDescending(x => x.CreatedAt)
-            .ToListAsync();
-
-        return Ok(list);
+        if (fr == null) return NotFound("Запись о дружбе не найдена.");
+        _db.Friendships.Remove(fr);
+        await _db.SaveChangesAsync();
+        return Ok(new { removed = true });
     }
 }
