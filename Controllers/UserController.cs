@@ -4,12 +4,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using JaeZoo.Server.Dtos;                 // ✅ наши серверные DTO
 
 namespace JaeZoo.Server.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize] // <--- закрыли контроллер
+[Authorize] // контроллер доступен только с JWT
 public class UsersController : ControllerBase
 {
     private readonly AppDbContext db;
@@ -24,7 +25,7 @@ public class UsersController : ControllerBase
     [HttpGet("search")]
     public async Task<ActionResult<IEnumerable<UserSearchDto>>> Search([FromQuery] string q)
     {
-        if (!TryGetUserId(out var meId)) return Unauthorized(); // <--- больше не NRE
+        if (!TryGetUserId(out var meId)) return Unauthorized();
 
         var query = (q ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(query))
@@ -38,7 +39,8 @@ public class UsersController : ControllerBase
                          u.Email.ToLower().Contains(qLower)))
             .OrderBy(u => u.UserName)
             .Take(20)
-            .Select(u => new UserSearchDto(u.Id, u.UserName, u.Email))
+            // ✅ string Id для DTO
+            .Select(u => new UserSearchDto(u.Id.ToString(), u.UserName, u.Email))
             .ToListAsync();
 
         return Ok(items);

@@ -1,4 +1,6 @@
-﻿using JaeZoo.Server.Data;
+﻿using System.Security.Claims;
+using JaeZoo.Server.Data;
+using JaeZoo.Server.Dtos;
 using JaeZoo.Server.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -9,26 +11,31 @@ namespace JaeZoo.Server.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class ChatController(AppDbContext db) : ControllerBase
+public class ChatController : ControllerBase
 {
-    private Guid MeId => Guid.Parse(User.FindFirst("sub")!.Value);
+    private readonly AppDbContext _db;
+    public ChatController(AppDbContext db) => _db = db;
+
+    private Guid MeId
+    {
+        get
+        {
+            var idStr = User.FindFirst("sub")?.Value
+                        ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return Guid.TryParse(idStr, out var id) ? id : Guid.Empty;
+        }
+    }
 
     private static (Guid a, Guid b) OrderPair(Guid x, Guid y) => x < y ? (x, y) : (y, x);
 
-    private async Task<DirectDialog> GetOrCreateDialog(Guid aId, Guid bId)
+    private Task<DirectDialog?> GetDialog(Guid u1, Guid u2)
     {
-        var (u1, u2) = OrderPair(aId, bId);
-        var dlg = await db.DirectDialogs.FirstOrDefaultAsync(d => d.User1Id == u1 && d.User2Id == u2);
-        if (dlg is not null) return dlg;
-
-        dlg = new DirectDialog { User1Id = u1, User2Id = u2 };
-        db.DirectDialogs.Add(dlg);
-        await db.SaveChangesAsync();
-        return dlg;
+        var (a, b) = OrderPair(u1, u2);
+        return _db.DirectDialogs.FirstOrDefaultAsync(d => d.User1Id == a && d.User2Id == b);
     }
 
     private Task<bool> AreFriends(Guid me, Guid other) =>
-        db.Friendships.AnyAsync(f =>
+        _db.Friendships.AnyAsync(f =>
             f.Status == FriendshipStatus.Accepted &&
             ((f.RequesterId == me && f.AddresseeId == other) ||
              (f.RequesterId == other && f.AddresseeId == me)));
@@ -36,16 +43,24 @@ public class ChatController(AppDbContext db) : ControllerBase
     [HttpGet("history/{friendId:guid}")]
     public async Task<ActionResult<IEnumerable<MessageDto>>> History(Guid friendId, int skip = 0, int take = 50)
     {
-        if (!await AreFriends(MeId, friendId)) return Forbid();
+        if (MeId == Guid.Empty) return Unauthorized();
 
-        var dlg = await GetOrCreateDialog(MeId, friendId);
+        // Не друзья — пустая история (чтобы клиент не падал)
+        if (!await AreFriends(MeId, friendId))
+            return Ok(Array.Empty<MessageDto>());
 
-        var items = await db.DirectMessages
+        var dlg = await GetDialog(MeId, friendId);
+        if (dlg is null) return Ok(Array.Empty<MessageDto>());
+
+        var items = await _db.DirectMessages
             .Where(m => m.DialogId == dlg.Id)
             .OrderBy(m => m.SentAt)
             .Skip(Math.Max(0, skip))
             .Take(Math.Clamp(take, 1, 200))
-            .Select(m => new MessageDto(m.SenderId, m.Text, m.SentAt))
+            .Select(m => new MessageDto(
+                m.SenderId.ToString(),
+                m.Text,
+                m.SentAt))
             .ToListAsync();
 
         return Ok(items);

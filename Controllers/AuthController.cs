@@ -1,6 +1,7 @@
 ﻿using JaeZoo.Server.Data;
 using JaeZoo.Server.Models;
 using JaeZoo.Server.Services;
+using JaeZoo.Server.Dtos;                 // ✅ наши серверные DTO
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -53,7 +54,9 @@ public class AuthController(AppDbContext db, TokenService tokens) : ControllerBa
             return Unauthorized("Неверный логин/почта или пароль.");
 
         var token = tokens.Create(user);
-        var dto = new UserDto(user.Id, user.UserName, user.Email, user.CreatedAt);
+
+        // ✅ string Id для DTO
+        var dto = new UserDto(user.Id.ToString(), user.UserName, user.Email, user.CreatedAt);
         return new TokenResponse(token, dto);
     }
 
@@ -65,6 +68,8 @@ public class AuthController(AppDbContext db, TokenService tokens) : ControllerBa
         var id = Guid.Parse(idStr);
         var u = await db.Users.FindAsync(id);
         if (u is null) return NotFound();
-        return new UserDto(u.Id, u.UserName, u.Email, u.CreatedAt);
+
+        // ✅ string Id для DTO
+        return new UserDto(u.Id.ToString(), u.UserName, u.Email, u.CreatedAt);
     }
 }
