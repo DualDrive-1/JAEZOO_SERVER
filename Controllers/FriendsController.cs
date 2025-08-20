@@ -30,24 +30,44 @@ public class FriendsController : ControllerBase
     [HttpGet("list")]
     public async Task<ActionResult<IEnumerable<FriendDto>>> List()
     {
-        if (!TryGetUserId(out var me)) return Unauthorized();
+        if (!TryGetUserId(out var me))
+            return Unauthorized();
 
-        var accepted = _db.Friendships.Where(f => f.Status == FriendshipStatus.Accepted &&
-                                                   (f.RequesterId == me || f.AddresseeId == me));
+        try
+        {
+            var accepted = _db.Friendships
+                .Where(f => f.Status == FriendshipStatus.Accepted &&
+                            (f.RequesterId == me || f.AddresseeId == me));
 
-        var asRequester = accepted.Where(f => f.RequesterId == me)
-            .Join(_db.Users, f => f.AddresseeId, u => u.Id,
-                (f, u) => new FriendDto(u.Id.ToString(), u.UserName, u.Email));
+            var asRequester = accepted
+                .Where(f => f.RequesterId == me)
+                .Join(_db.Users, f => f.AddresseeId, u => u.Id,
+                    (f, u) => new FriendDto(
+                        u.Id.ToString(),
+                        u.UserName ?? "(no name)",
+                        u.Email ?? string.Empty));
 
-        var asAddressee = accepted.Where(f => f.AddresseeId == me)
-            .Join(_db.Users, f => f.RequesterId, u => u.Id,
-                (f, u) => new FriendDto(u.Id.ToString(), u.UserName, u.Email));
+            var asAddressee = accepted
+                .Where(f => f.AddresseeId == me)
+                .Join(_db.Users, f => f.RequesterId, u => u.Id,
+                    (f, u) => new FriendDto(
+                        u.Id.ToString(),
+                        u.UserName ?? "(no name)",
+                        u.Email ?? string.Empty));
 
-        var items = await asRequester.Concat(asAddressee)
-            .OrderBy(x => x.UserName)
-            .ToListAsync();
+            var items = await asRequester
+                .Concat(asAddressee)
+                .OrderBy(x => x.UserName)
+                .ToListAsync();
 
-        return Ok(items);
+            return Ok(items);
+        }
+        catch (Exception ex)
+        {
+            // логирование ошибки, чтобы видеть точную причину
+            Console.WriteLine("Ошибка в FriendsController.List: " + ex.Message);
+            return StatusCode(500, "Ошибка при загрузке списка друзей.");
+        }
     }
 
     // Было Request(...) — переименовали, чтобы не перекрывать ControllerBase.Request
